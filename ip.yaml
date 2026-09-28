@@ -1,0 +1,115 @@
+name: miaow
+version: 0.1.0
+spec: '0.1'
+kind: ip
+lang: verilog
+identity:
+  slug: miaow-tapeout-foreign
+  display_name: MIAOW
+  summary: Wisconsin's MIAOW, a compute unit for the AMD Southern Islands ISA, taken as a black box.
+  category: accelerator
+  subcategories:
+  - gpu
+  ip_family: miaow
+  integration_profile: []
+  maturity: planned
+contract:
+  version: 1
+  ctrl:
+    shape: none
+    aw: 32
+    dw: 32
+emit:
+- kind: foreign
+  lang: verilog
+  top: compute_unit
+  # 宏定义在 *_definitions.v 里，别的文件直接用，要排在最前、并成一个编译单元
+  unit: single
+  setup: vp
+  rtl:
+  - third_party/miaow/src/verilog/rtl/common/global_definitions.v
+  - third_party/miaow/src/verilog/rtl/common/issue_definitions.v
+  - third_party/miaow/src/verilog/rtl/alu/alu_definitions.v
+  - third_party/miaow/src/verilog/rtl/lsu/lsu_definitions.v
+  - third_party/miaow/src/verilog/rtl/decode/decode_definitions.v
+  - { glob: "build/vp/*.v", exclude: ["build/vp/tracemon.v"] }
+  # fpga/ 要 Vivado 生成的 block_ram；tracemon/ 是 VCS 的 DirectC，只给仿真
+  - glob: "third_party/miaow/src/verilog/rtl/*/*.v"
+    exclude:
+    - "third_party/miaow/src/verilog/rtl/fpga/*"
+    - "third_party/miaow/src/verilog/rtl/tracemon/*"
+  clock:
+    port: clk
+  reset:
+    port: rst
+    active: high
+    sync: true
+  ports:
+  - endpoint: dispatch
+    kind: transaction
+    role: target
+    profile: miaow-dispatch
+    map:
+      wfDispatch: dispatch2cu_wf_dispatch
+      wfTag: dispatch2cu_wf_tag_dispatch
+      startPc: dispatch2cu_start_pc_dispatch
+      sgprBase: dispatch2cu_sgpr_base_dispatch
+      vgprBase: dispatch2cu_vgpr_base_dispatch
+      ldsBase: dispatch2cu_lds_base_dispatch
+      wgWfCount: dispatch2cu_wg_wf_count
+      wfSize: dispatch2cu_wf_size_dispatch
+      wfDone: cu2dispatch_wf_done
+      wfTagDone: cu2dispatch_wf_tag_done
+  - endpoint: ifetch
+    kind: transaction
+    role: manager
+    profile: miaow-ifetch
+    map:
+      rdEn: fetch2buff_rd_en
+      addr: fetch2buff_addr
+      tag: fetch2buff_tag
+      ack: buff2fetchwave_ack
+      instr: buff2wave_instr
+      instrTag: buff2wave_tag
+  - endpoint: mem
+    kind: transaction
+    role: manager
+    profile: miaow-mem
+    map:
+      rdEn: lsu2mem_rd_en
+      wrEn: lsu2mem_wr_en
+      tag: lsu2mem_tag_req
+      wrMask: lsu2mem_wr_mask
+      addr: lsu2mem_addr
+      wrData: lsu2mem_wr_data
+      gmOrLds: lsu2mem_gm_or_lds
+      ack: mem2lsu_ack
+      tagResp: mem2lsu_tag_resp
+      rdData: mem2lsu_rd_data
+  limits:
+  - 一个计算单元，配置写死在 *_definitions.v 的宏里，本版不可配
+  - 另有一百五十多根输出是给上游 tracemon 看的观测口，本版不声明成端点
+  - 上游测试台只认 VCS 与它的 DirectC 模型，本仓没跑
+tasks:
+  vp:
+    desc: 用上游的 veriperl.pl 把 .vp 展成 .v；同名 .v 已入库的照上游 Makefile 以入库那份为准
+    run: |
+      bash -c '
+      set -e
+      R=$PWD; U=$R/third_party/miaow/src/verilog/rtl; P=$R/third_party/miaow/scripts/veriperl.pl
+      rm -rf build/vp; mkdir -p build/vp; cd build/vp
+      n=0
+      for f in $U/*/*.vp; do
+        b=$(basename $f .vp)
+        [ -e $(dirname $f)/$b.v ] && continue
+        perl $P -i $f -o $b.v
+        # 它在块跑不起来时不报错，只照抄原文：输出不比输入长就是没展开
+        if grep -q "^%%start_veriperl" $f && [ $(wc -l < $b.v) -le $(wc -l < $f) ]; then
+          echo "veriperl 没有展开 $f" >&2; exit 1
+        fi
+        n=$((n+1))
+      done
+      test $n -gt 0'
+targets:
+  foreign:
+    driver: foreign
